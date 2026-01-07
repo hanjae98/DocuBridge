@@ -47,29 +47,30 @@ No Python installation required. Just download the executable file.
 <details>
 <summary><strong>Click to expand Implementation Details (System Logic)</strong></summary>
 
-### 1. Multi-Engine Load Balancing (Round-Robin)
-To minimize API rate limiting, **DocuBridge** utilizes a **Round-Robin** strategy across heterogeneous translation engines (Google, Bing, Alibaba).
-- **Traffic Distribution:** Requests are distributed sequentially ($i \pmod N$).
-- **Failover:** If an engine fails, it is temporarily excluded from the active pool.
+### 1. Multi-Engine Load Balancing
+To bypass API rate limits and ensure high availability, **DocuBridge** distributes traffic across multiple translation engines (Google, Bing, Alibaba).
+- **Round-Robin Strategy:** Requests are distributed sequentially ($i \pmod N$) to balance load.
+- **Dynamic Failover:** Automatically detects engine failures and temporarily excludes them from the active pool to maintain service continuity.
 
-### 2. Concurrency Control & Idempotency
-Word documents often contain merged cells that share the same XML object ID.
-- **Object ID Locking:** Uses `threading.Lock` and Python's `id()` to identify unique paragraph objects.
-- **State Management:** Prevents duplicate translations (Race Conditions) by tracking the state of each paragraph (`UNTOUCHED` → `QUEUED` → `PROCESSING` → `DONE`).
+### 2. Concurrency & Idempotency Control
+Handles complex Word document structures (e.g., merged cells) where multiple elements may reference the same XML object.
+- **Thread-Safe Locking:** Uses `threading.Lock` and unique object memory addresses to prevent race conditions.
+- **Stateful Deduplication:** Tracks paragraph states (`READY` → `PROCESSING` → `DONE`) to ensure each segment is translated exactly once.
 
-### 3. Finite State Machine (FSM) Lifecycle
-Ensures data integrity by tracking the full lifecycle of every translation task.
-- **States:** `READY` → `IN_PROGRESS` → `SUCCESS` / `FAILED` / `SKIPPED`.
-- **Audit:** Ensures no tasks are lost ("Zombie processes") during network interruptions.
+### 3. FSM-based Task Lifecycle
+A Finite State Machine (FSM) manages the lifecycle of every translation unit to prevent data loss.
+- **Lifecycle Tracking:** `READY` → `IN_PROGRESS` → `SUCCESS` / `FAILED` / `SKIPPED`.
+- **Fault Tolerance:** Robust audit logic ensures no "zombie tasks" remain in the event of unexpected network interruptions.
 
-### 4. Phoenix Protocol (Two-Phase Commit)
-Guarantees maximum success rate through a two-phase strategy.
-- **Phase 1 (Normal):** Standard load balancing translation.
-- **Phase 2 (Recovery):** Filters only failed tasks and executes an **Aggressive Fetch** (simultaneous requests to all engines) to recover missing data.
+### 4. Dual-Phase Recovery Strategy
+A specialized two-phase approach to maximize the success rate of large-scale documents.
+- **Phase 1 (Standard):** Executes translation using the default load-balancing logic.
+- **Phase 2 (Recovery):** Identifies failed tasks and performs an **Aggressive Fetch**—issuing simultaneous requests across all available engines to guarantee data retrieval.
 
-### 5. Heuristic Preprocessing
-- **Regex Filtering:** Automatically detects and preserves numbering formats (e.g., 1. 2. or A. B.).
-- **Smart Skipping:** Skips content that is already translated or contains no Korean characters to save resources.
+### 5. Rule-Based Preprocessing
+Optimizes API consumption and preserves document integrity through smart filtering.
+- **Format Preservation:** Uses regex to identify and protect numbering (1., A., etc.) and special symbols.
+- **Smart Skipping:** Automatically bypasses empty segments, non-target languages, or previously translated content to reduce costs.
 
 </details>
 
@@ -92,7 +93,7 @@ If you want to run the source code directly or contribute:
 
 ```bash
 # 1. Clone the repository
-git clone [https://github.com/hanjae98/DocuBridge.git](https://github.com/hanjae98/DocuBridge.git)
+git clone https://github.com/hanjae98/DocuBridge.git
 cd DocuBridge
 
 # 2. Install dependencies (Virtual Environment recommended)
