@@ -32,7 +32,7 @@ No Python installation required. Just download the executable file.
 
 <p align="center">
 
-  <img src="https://github.com/user-attachments/assets/e8de138e-3ed7-4e30-a527-84ab823c4417" width="60%">
+  <img src="https://github.com/user-attachments/assets/e8de138e-3ed7-4e30-a527-84ab823c4417" width="42%">
 
   <br>
 
