@@ -1,0 +1,30 @@
+# 파이썬 부산물 무시
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 가상환경 폴더 무시
+venv/
+env/
+.conda/
+
+# 빌드 관련 폴더 무시 (exe 만들 때 생김)
+build/
+dist/
+*.spec
+
+# IDE 설정 파일 무시
+.vscode/
+.idea/
+
+# 테스트용 문서 및 로그 무시 (중요!)
+*.docx
+*.doc
+*.txt
+config.json
+
+# 단, requirements.txt랑 version.json은 올려야 함
+!requirements.txt
+!version.json
+
+*.exe
