@@ -30,8 +30,15 @@ No Python installation required. Just download the executable file.
 2. **Start:** Click `Start Translation`.
 3. **Wait & Done:** The progress bar will show the status. The translated file will be saved as `Original_Translated_Timestamp.docx` in the same folder.
 
-![Process Screenshot](https://github.com/user-attachments/assets/e8de138e-3ed7-4e30-a527-84ab823c4417)
-*(▲ Real-time progress tracking with clickable logs)*
+<p align="center">
+
+  <img src="https://github.com/user-attachments/assets/e8de138e-3ed7-4e30-a527-84ab823c4417" width="60%">
+
+  <br>
+
+  <em>(▲ Real-time progress tracking with clickable logs)</em>
+
+</p>
 
 ---
 
