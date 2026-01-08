@@ -114,6 +114,22 @@ If you find any bugs or have suggestions, please open an issue in the **[Issues]
 * **Email:** [jasonhan9806@gmail.com](mailto:jasonhan9806@gmail.com)
 * **Developer:** Han Jaesung (hanjae98)
 
+## 🗺️ Roadmap (Future Plans)
+
+We are constantly working to improve DocuBridge. Here are some features planned for future updates:
+
+* **v1.1.0: Visual Customization**
+    * [ ] User-defined font colors for translated text (e.g., Original: Black / Translated: Blue).
+    * [ ] Font size adjustment options.
+* **v1.2.0: Professional Features**
+    * [ ] **Glossary Support:** Apply custom terminology (e.g., `glossary.txt`) to ensure consistent translation of technical terms.
+    * [ ] **Selective Translation:** Option to translate specific page ranges (e.g., pages 3-5 only).
+* **v1.5.0: Format Expansion**
+    * [ ] Support for PowerPoint (`.pptx`) and Excel (`.xlsx`) files.
+* **v2.0.0: On-Device AI (The Next Step)**
+    * [ ] **Offline Mode:** Integrate lightweight local AI models (SLM) for secure, internet-free translation.
+    * [ ] **Privacy First:** Ensure sensitive documents never leave your local machine.
+
 ## 📄 License
 
 This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) file for details.
