@@ -21,18 +21,17 @@ from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 
 # ===== [Settings] =====
 APP_NAME = "DocuBridge"
-APP_SUBTITLE = "Auto-Bilingual Word Generator" # 부제목 추가
-CURRENT_VERSION = "v1.0.0"
+APP_SUBTITLE = "Hybrid (Cloud + On-Device) Translator"
+CURRENT_VERSION = "v1.1.0"
 REPO_OWNER = "hanjae98" 
 REPO_NAME = "DocuBridge"    
 VERSION_URL = f"https://raw.githubusercontent.com/{REPO_OWNER}/{REPO_NAME}/main/version.json"
 RELEASE_URL = f"https://github.com/{REPO_OWNER}/{REPO_NAME}/releases/latest"
 
-MOCK_TEST = False  # Set False for production
+MOCK_TEST = False 
 APPEND_COLOR = (128, 128, 128)
+# Hybrid 모드에서는 Online이 빠르므로 4로 유지하되, Local 사용 시 내부 Lock으로 제어됨
 MAX_WORKERS = 4 
-CANDIDATE_ENGINES = ['google', 'bing', 'alibaba']
-ACTIVE_ENGINES = []
 
 HAN_TO_ENG_MAP = {
     '가': 'A', '나': 'B', '다': 'C', '라': 'D', '마': 'E', '바': 'F', '사': 'G',
@@ -47,27 +46,23 @@ HAN_TO_ENG_MAP = {
 class ConfigManager:
     def __init__(self):
         self.config_file = "config.json"
-        # 1. 기본 설정값 정의 (파일 없으면 이 값으로 시작)
         self.defaults = {
             "ignored_version": "v0.0.0",
             "theme": "light",
-            "debug_mode": False
+            "debug_mode": False,
+            "backend_priority": "online",  # 'online' or 'local'
+            "ollama_model": "qwen2.5:1.5b" # Default AI Model
         }
         self.data = self.load()
-        
-        # 2. [핵심] 프로그램이 어떤 방식으로든 종료될 때 save() 자동 실행 등록
         atexit.register(self.save)
 
     def load(self):
-        # 파일이 없으면 기본값 리턴
         if not os.path.exists(self.config_file):
             return self.defaults.copy()
-        
         try:
             with open(self.config_file, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except:
-            # 파일이 깨졌거나 읽기 실패하면 안전하게 기본값 리턴
             return self.defaults.copy()
 
     def save(self):
@@ -78,12 +73,10 @@ class ConfigManager:
             print(f"Config save failed: {e}")
 
     def get(self, key, default=None):
-        # 값이 없으면 기본값에서 찾고, 그래도 없으면 default 리턴
         return self.data.get(key, self.defaults.get(key, default))
 
     def set(self, key, value):
         self.data[key] = value
-        # set 할 때마다 저장하긴 하지만, atexit 덕분에 혹시 놓쳐도 안심
         self.save()
 
 config = ConfigManager()
@@ -104,8 +97,8 @@ class ToolTip:
         tw.wm_overrideredirect(True)
         tw.wm_geometry(f"+{x}+{y}")
         label = tk.Label(tw, text=self.text, justify='left',
-                       background="#ffffe0", relief='solid', borderwidth=1,
-                       font=("Segoe UI", 9))
+                        background="#ffffe0", relief='solid', borderwidth=1,
+                        font=("Segoe UI", 9))
         label.pack(ipadx=1)
     def hide_tip(self, event=None):
         if self.tip_window:
@@ -200,47 +193,225 @@ class FileLogger:
             for log in self.logs: f.write(f"[{log['id']:03d}] [{log['status']}] [{log['engine']}]\nORIGIN: {log['orig']}\nTRANS : {log['trans']}\n{'-'*60}\n")
         return self.filename
 
-# ===== [Logic] =====
-def check_engine_health(app):
-    global ACTIVE_ENGINES
-    ACTIVE_ENGINES = []
-    app.start_checking_animation()
-    test_text = "안녕"
-    for engine in CANDIDATE_ENGINES:
+# ===== [Logic - Translation Backends] =====
+class TranslationBackend:
+    def check_health(self, app):
+        raise NotImplementedError
+    def translate(self, text, task_index, app, logger, task_id):
+        raise NotImplementedError
+    def recover_batch(self, text):
+        raise NotImplementedError
+
+# 1. Online Backend (from Old Docubridge)
+class OnlineBackend(TranslationBackend):
+    def __init__(self):
+        self.candidate_engines = ['google', 'bing', 'alibaba']
+        self.active_engines = []
+
+    def check_health(self, app):
+        self.active_engines = []
+        test_text = "테스트"
+        for engine in self.candidate_engines:
+            try:
+                # 짧은 타임아웃으로 상태 확인
+                res = ts.translate_text(test_text, translator=engine, from_language='ko', to_language='en', timeout=3)
+                if res: self.active_engines.append(engine)
+            except: pass
+        
+        # 최소한 구글은 추가 (실패하더라도 시도는 하도록)
+        if not self.active_engines: self.active_engines.append('google')
+
+    def translate(self, text, task_index, app, logger, task_id):
+        if not self.active_engines: return None
+        
+        primary_idx = task_index % len(self.active_engines)
+        # Round-robin queue
+        queue = [self.active_engines[primary_idx]] + [e for e in self.active_engines if e != self.active_engines[primary_idx]]
+        
+        if text.strip() == "기타":
+            if logger: logger.add(task_id, "REPLACE", "System", text, "Etc")
+            return "Etc"
+            
+        for engine in queue:
+            try:
+                if app.debug_mode: time.sleep(random.uniform(0.1, 0.3))
+                res = ts.translate_text(text, translator=engine, from_language='ko', to_language='en', timeout=5)
+                if res:
+                    if logger: logger.add(task_id, "SUCCESS", f"Online({engine})", text, res)
+                    return res
+            except: continue
+        return None
+
+    def recover_batch(self, text):
+        # Recovery Logic: Try all engines concurrently
+        with ThreadPoolExecutor(max_workers=len(self.active_engines)) as executor:
+            futures = {executor.submit(ts.translate_text, text, translator=eng, from_language='ko', to_language='en'): eng for eng in self.active_engines}
+            done, not_done = wait(futures, return_when=FIRST_COMPLETED)
+            for future in done:
+                try:
+                    result = future.result()
+                    if result: return result, futures[future]
+                except: continue
+        return None, None
+
+# 2. Local AI Backend (Ollama)
+class OllamaBackend(TranslationBackend):
+    def __init__(self):
+        self.api_url = "http://localhost:11434/api/generate"
+        self.model_name = config.get("ollama_model", "qwen2.5:1.5b")
+        # CPU/GPU 리소스 보호를 위해 Lock 사용 (MAX_WORKERS=4여도 Ollama는 1개씩 or 병렬설정따라)
+        self.lock = threading.Lock()
+        self.is_available = False
+
+    def check_health(self, app):
+        # 1. Ollama 실행 여부 확인
         try:
-            res = ts.translate_text(test_text, translator=engine, from_language='ko', to_language='en', timeout=5)
-            if res: ACTIVE_ENGINES.append(engine)
-        except: pass
-    if not ACTIVE_ENGINES: ACTIVE_ENGINES.append('google')
-    app.stop_checking_animation()
+            requests.get("http://localhost:11434/", timeout=2)
+        except:
+            # Ollama가 꺼져있으면 Local 사용 불가 처리
+            self.is_available = False
+            return
+
+        # 2. 모델 존재 여부 확인 및 자동 설치
+        try:
+            res = requests.get("http://localhost:11434/api/tags", timeout=5)
+            models = [m['name'] for m in res.json().get('models', [])]
+            
+            if not any(self.model_name in m for m in models):
+                # 모델이 없으면 사용자에게 물어보고 다운로드
+                if messagebox.askyesno("AI Model Missing", 
+                                       f"로컬 AI 모델 '{self.model_name}'이 없습니다.\n다운로드하시겠습니까? (약 1~2GB)"):
+                    self.download_model(app)
+                else:
+                    self.is_available = False
+                    return
+            
+            self.is_available = True
+            
+        except Exception as e:
+            self.is_available = False
+            if app.debug_mode: print(f"Ollama Health Check Error: {e}")
+
+    def download_model(self, app):
+        app.update_status_text(f"Downloading {self.model_name}... (This may take a while)")
+        # 윈도우 터미널을 열지 않고 백그라운드에서 실행
+        try:
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            process = subprocess.Popen(["ollama", "pull", self.model_name], 
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, 
+                                       startupinfo=startupinfo)
+            process.wait() # 다운로드 끝날 때까지 대기
+            app.update_status_text("Model download complete.")
+        except Exception as e:
+            messagebox.showerror("Download Failed", f"모델 다운로드 실패: {e}")
+
+    def translate(self, text, task_index, app, logger, task_id):
+        if not self.is_available: return None
+
+        prompt = f"Translate this Korean text to English. Output ONLY the translated text without any explanation.\n\nKorean: {text}\nEnglish:"
+        payload = {
+            "model": self.model_name,
+            "prompt": prompt,
+            "stream": False,
+            "options": {"temperature": 0.0, "num_predict": 128, "num_ctx": 2048}
+        }
+
+        with self.lock: # 리소스 보호
+            try:
+                response = requests.post(self.api_url, json=payload, timeout=60)
+                if response.status_code == 200:
+                    res_json = response.json()
+                    translated = res_json.get("response", "").strip()
+                    # 후처리
+                    if translated.lower().startswith("english:"): translated = translated[8:].strip()
+                    translated = translated.strip('"').strip("'")
+                    
+                    if translated:
+                        if logger: logger.add(task_id, "SUCCESS", "Local_AI", text, translated)
+                        return translated
+            except Exception as e:
+                if logger: logger.add(task_id, "ERROR", "Local_AI", text, str(e))
+        return None
+
+    def recover_batch(self, text):
+        return self.translate(text, 0, None, None, -1), "Local_AI_Retry"
+
+# 3. Hybrid Manager (The Brain)
+class HybridBackendManager:
+    def __init__(self):
+        self.online = OnlineBackend()
+        self.local = OllamaBackend()
+        # config.json에서 우선순위 로드 (기본값: online)
+        self.priority = config.get("backend_priority", "online") 
+
+    def check_health(self, app):
+        app.start_checking_animation()
+        
+        # 1. Check Primary
+        if self.priority == "online":
+            app.update_status_text("Checking Online Translators...")
+            self.online.check_health(app)
+            # 온라인이 불안하면 로컬도 체크해둠 (백업용)
+            if not self.online.active_engines:
+                app.update_status_text("Online unavailable. Checking Local AI...")
+                self.local.check_health(app)
+        else: # Local First
+            app.update_status_text("Checking Local AI...")
+            self.local.check_health(app)
+            # 로컬이 없으면 온라인 체크
+            if not self.local.is_available:
+                app.update_status_text("Local AI unavailable. Checking Online...")
+                self.online.check_health(app)
+
+        app.stop_checking_animation()
+
+    def translate(self, text, task_index, app, logger, task_id):
+        # 1. Try Primary
+        if self.priority == "online":
+            res = self.online.translate(text, task_index, app, logger, task_id)
+            if res: return res
+            
+            # 2. Fallback to Secondary (Local AI)
+            if self.local.is_available:
+                if app.debug_mode: logger.add(task_id, "FALLBACK", "To_Local", text, "Online Failed")
+                return self.local.translate(text, task_index, app, logger, task_id)
+                
+        else: # Local First
+            res = self.local.translate(text, task_index, app, logger, task_id)
+            if res: return res
+            
+            # 2. Fallback to Secondary (Online)
+            if app.debug_mode: logger.add(task_id, "FALLBACK", "To_Online", text, "Local Failed")
+            return self.online.translate(text, task_index, app, logger, task_id)
+            
+        return None
+
+    def recover_batch(self, text):
+        # 복구 시도: 무조건 둘 다 시도해서 먼저 되는 거 리턴
+        res, eng = self.online.recover_batch(text)
+        if res: return res, eng
+        
+        res, eng = self.local.recover_batch(text)
+        if res: return res, eng
+        
+        return None, None
+
+# ===== [Configuration: Active Backend] =====
+# 이제 단일 Backend가 아니라 Hybrid Manager를 사용
+CURRENT_BACKEND = HybridBackendManager()
+
+# ===== [Logic - Core Processing] =====
+# 기존 로직과 100% 동일
+
+def check_engine_health(app):
+    CURRENT_BACKEND.check_health(app)
 
 def translate_logic(text, task_index, app, logger, task_id):
-    primary_idx = task_index % len(ACTIVE_ENGINES)
-    queue = [ACTIVE_ENGINES[primary_idx]] + [e for e in ACTIVE_ENGINES if e != ACTIVE_ENGINES[primary_idx]]
-    if text.strip() == "기타":
-        logger.add(task_id, "REPLACE", "System", text, "Etc")
-        return "Etc"
-    for engine in queue:
-        try:
-            if app.debug_mode: time.sleep(random.uniform(0.1, 0.4))
-            res = ts.translate_text(text, translator=engine, from_language='ko', to_language='en', timeout=10)
-            if res:
-                logger.add(task_id, "SUCCESS", engine, text, res)
-                return res
-        except: continue
-    logger.add(task_id, "FAIL_WAIT", "All", text, "Wait for Recovery")
-    return None
+    return CURRENT_BACKEND.translate(text, task_index, app, logger, task_id)
 
 def aggressive_recovery_translate(text):
-    with ThreadPoolExecutor(max_workers=len(ACTIVE_ENGINES)) as executor:
-        futures = {executor.submit(ts.translate_text, text, translator=eng, from_language='ko', to_language='en'): eng for eng in ACTIVE_ENGINES}
-        done, not_done = wait(futures, return_when=FIRST_COMPLETED)
-        for future in done:
-            try:
-                result = future.result()
-                if result: return result, futures[future]
-            except: continue
-    return None, None
+    return CURRENT_BACKEND.recover_batch(text)
 
 def smart_translate(task_info, app, logger):
     task_id = task_info['id']
@@ -381,12 +552,12 @@ class App:
         self.update_manager = UpdateManager(self)
 
         saved_debug = config.get("debug_mode", False)
-        self.debug_var = tk.BooleanVar(value=saved_debug) # 초기값 설정
-        self.debug_mode = saved_debug # 내부 변수도 동기화
+        self.debug_var = tk.BooleanVar(value=saved_debug) 
+        self.debug_mode = saved_debug 
 
         saved_theme = config.get("theme", "light")
         is_dark_init = (saved_theme == "dark")
-        self.dark_mode_var = tk.BooleanVar(value=is_dark_init) # 초기값 설정
+        self.dark_mode_var = tk.BooleanVar(value=is_dark_init) 
 
         self.file_paths = []
         self.is_checking_engines = False
@@ -396,16 +567,16 @@ class App:
         self.header_frame = tk.Frame(root, pady=15, padx=20, bg="#f8f9fa")
         self.header_frame.pack(fill='x')
         
-        # [NEW] Title & Subtitle Container
+        # Title & Subtitle Container
         title_container = tk.Frame(self.header_frame, bg="#f8f9fa")
         title_container.pack(side='left')
         
         self.title_lbl = tk.Label(title_container, text=APP_NAME, font=("Segoe UI", 18, "bold"), bg="#f8f9fa", fg="#2c3e50")
         self.title_lbl.pack(side='left')
         
-        # [NEW] Subtitle Label
+        # Subtitle Label
         self.subtitle_lbl = tk.Label(title_container, text=APP_SUBTITLE, font=("Segoe UI", 10), bg="#f8f9fa", fg="#7f8c8d")
-        self.subtitle_lbl.pack(side='left', padx=(10, 0), pady=(8, 0)) # Slight offset to align bottomish
+        self.subtitle_lbl.pack(side='left', padx=(10, 0), pady=(8, 0))
 
         self.update_btn = tk.Button(self.header_frame, text="Up to date", state='disabled', relief='flat', bg="#e9ecef")
         self.update_btn.pack(side='right')
@@ -449,11 +620,9 @@ class App:
         self.log_area.tag_bind("HYPERLINK", "<Enter>", lambda e: self.log_area.config(cursor="hand2"))
         self.log_area.tag_bind("HYPERLINK", "<Leave>", lambda e: self.log_area.config(cursor="arrow"))
         
-        # 저장된 값이 'Dark Mode'라면 색상을 변경하는 함수를 강제 실행
         if is_dark_init:
             self.toggle_theme()
             
-        # 저장된 값이 'Debug Mode'라면 로그 모드 변경 함수 실행
         if saved_debug:
             self.toggle_debug()
 
@@ -511,8 +680,8 @@ class App:
         # Apply
         self.header_frame.config(bg=bg_header)
         self.title_lbl.config(bg=bg_header, fg=fg_title)
-        self.subtitle_lbl.config(bg=bg_header, fg=fg_sub) # Subtitle update
-        self.title_lbl.master.config(bg=bg_header) # Container update
+        self.subtitle_lbl.config(bg=bg_header, fg=fg_sub) 
+        self.title_lbl.master.config(bg=bg_header) 
         
         self.log_area.config(bg=bg_log, fg=fg_log, insertbackground="white" if is_dark else "black")
         
@@ -612,20 +781,18 @@ class App:
             self.root.after(0, lambda: self.lbl_status_detail.config(text=msg))
 
     def reset_ui(self):
-        # [FIX] Clear file paths and disable button
         self.file_paths = [] 
         self.root.after(0, lambda: self.lbl_status_detail.config(text="Please select Word files (.docx)"))
         self.root.after(0, lambda: self.progress.configure(value=0))
         self.root.after(0, lambda: self.btn_select.config(state='normal'))
-        self.root.after(0, lambda: self.btn_run.config(state='disabled')) # [FIX] Disable run button
+        self.root.after(0, lambda: self.btn_run.config(state='disabled')) 
 
     def on_closing(self):
-        """프로그램 종료 시 호출되는 함수"""
         try:
-            config.save() # 종료 전 강제 저장
+            config.save() 
         except:
             pass
-        self.root.destroy() # 창 닫기
+        self.root.destroy() 
 
 if __name__ == "__main__":
     root = tk.Tk()
